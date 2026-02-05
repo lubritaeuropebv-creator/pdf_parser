@@ -1,123 +1,112 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import json, gc, io, itertools
+import json, gc, re, urllib.parse
 from pdf2image import convert_from_bytes
 import google.generativeai as genai
 import fitz 
 from rapidfuzz import process, fuzz
 
-# --- 1. CONFIG (2026 STANDARDS) ---
-st.set_page_config(
-    page_title="LT Price Strategist v2.0", 
-    layout="wide", 
-    initial_sidebar_state="expanded"
-)
+# --- 1. CORE CONFIG & AGENT SETUP ---
+st.set_page_config(page_title="LT AI Procurement Agent", layout="wide")
 
 if 'master_df' not in st.session_state:
     st.session_state['master_df'] = pd.DataFrame()
 
 # --- 2. LITHUANIAN RETAIL NORMALIZER ---
 def normalize_lt_price(value):
-    """
-    Cleans strings like '1,99 €', '2 vnt. už 3.00', or '0.99/kg' into clean floats.
-    """
     if value is None or value == "": return 0.0
-    if isinstance(value, (int, float)): return float(value)
-    
-    # 1. Standardize formatting (commas to dots)
     s = str(value).lower().replace(',', '.').replace('€', '').strip()
-    
-    # 2. Logic for "Buy 2 for X" - extract the total and divide if needed
-    # Example: "2 vnt - 3.00" -> 1.50
-    if "už" in s or "vnt" in s:
-        try:
-            parts = [float(x) for x in "".join(c if c.isdigit() or c == '.' else ' ' for c in s).split()]
-            if len(parts) >= 2:
-                return round(parts[1] / parts[0], 2)
-            elif len(parts) == 1:
-                return parts[0]
-        except: pass
-
-    # 3. Clean remaining text and symbols
     try:
-        clean_val = "".join(c for c in s if c.isdigit() or c == '.')
-        return round(float(clean_val), 2) if clean_val else 0.0
-    except:
-        return 0.0
+        clean = "".join(c for c in s if c.isdigit() or c == '.')
+        return round(float(clean), 2) if clean else 0.0
+    except: return 0.0
 
-# --- 3. PROCESSING ENGINE ---
-def process_flyer(api_key, uploaded_file, shop_name):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-    extracted_data = []
-    
-    pdf_bytes = uploaded_file.read()
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    
-    progress_bar = st.progress(0)
-    for i in range(len(doc)):
-        images = convert_from_bytes(pdf_bytes, first_page=i+1, last_page=i+1, dpi=150)
-        if images:
-            prompt = """Extract product data. 
-            Return JSON list: 'product_name', 'std_price', 'disc_price', 'unit_price', 'disc_pct'. 
-            If price is 'Buy 2 for X', put the raw string in 'disc_price'."""
-            try:
-                response = model.generate_content([prompt, images[0]])
-                clean = response.text.strip().replace("```json", "").replace("```", "")
-                page_items = json.loads(clean)
-                for item in page_items:
-                    # Apply Lithuanian Normalizer
-                    extracted_data.append({
-                        "product_name": str(item.get("product_name") or "Unknown"),
-                        "std_price": normalize_lt_price(item.get("std_price")),
-                        "disc_price": normalize_lt_price(item.get("disc_price")),
-                        "unit_price": str(item.get("unit_price") or ""),
-                        "store": str(shop_name)
-                    })
-            except: continue
-            del images
-            gc.collect()
-        progress_bar.progress((i + 1) / len(doc))
-    return pd.DataFrame(extracted_data)
+def parse_weight(unit_str):
+    if not unit_str: return 1.0
+    s = str(unit_str).lower().replace(',', '.')
+    try:
+        nums = re.findall(r"[-+]?\d*\.\d+|\d+", s)
+        val = float(nums[0])
+        if 'g' in s or 'ml' in s: return val / 1000
+        return val
+    except: return 1.0
 
-# --- 4. UI DASHBOARD ---
+# --- 3. SIDEBAR: DATA INGESTION ---
 with st.sidebar:
     st.header("🔑 Authenticate")
     api_key = st.text_input("Gemini API Key", type="password")
-    
-    if not st.session_state['master_df'].empty:
-        st.divider()
-        st.subheader("📥 Export Hub")
-        csv = st.session_state['master_df'].to_csv(index=False).encode('utf-8')
-        st.download_button("Download Strategy CSV", csv, "prices.csv", "text/csv")
-        if st.button("🗑️ Reset All"):
-            st.session_state['master_df'] = pd.DataFrame()
-            st.rerun()
-
     st.divider()
-    shop = st.selectbox("Retailer", ["Lidl", "Maxima", "IKI", "Rimi", "Norfa"])
+    shop = st.selectbox("Current Retailer", ["Lidl", "Maxima", "IKI", "Rimi", "Norfa"])
     file = st.file_uploader(f"Upload {shop} PDF", type="pdf")
     
-    if st.button("🚀 Scrape & Normalize"):
+    if st.button("🚀 Scrape & Audit", width="stretch"):
         if api_key and file:
-            new_data = process_flyer(api_key, file, shop)
-            st.session_state['master_df'] = pd.concat([st.session_state['master_df'], new_data], ignore_index=True).drop_duplicates()
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-3-flash-preview")
+            pdf_bytes = file.read()
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            extracted = []
+            
+            for i in range(len(doc)):
+                images = convert_from_bytes(pdf_bytes, first_page=i+1, last_page=i+1, dpi=150)
+                if images:
+                    prompt = "Return JSON list: 'name', 'std_price', 'disc_price', 'weight'."
+                    resp = model.generate_content([prompt, images[0]])
+                    items = json.loads(resp.text.strip().replace("```json", "").replace("```", ""))
+                    for it in items:
+                        dp = normalize_lt_price(it.get('disc_price'))
+                        w = parse_weight(it.get('weight'))
+                        extracted.append({
+                            "product_name": it.get('name', 'Unknown'),
+                            "std_price": normalize_lt_price(it.get('std_price')),
+                            "disc_price": dp,
+                            "unit_price_kg": round(dp / w, 2) if w > 0 else dp,
+                            "store": shop
+                        })
+            st.session_state['master_df'] = pd.concat([st.session_state['master_df'], pd.DataFrame(extracted)], ignore_index=True).drop_duplicates()
             st.rerun()
 
-st.title("🛒 LT Retail Strategy Engine")
+# --- 4. MAIN INTERFACE ---
+st.title("🛡️ LT AI Procurement Agent")
 
 if not st.session_state['master_df'].empty:
-    df = st.session_state['master_df']
+    tab1, tab2 = st.tabs(["📊 Market Analytics", "🍳 Route Optimizer"])
     
-    # Display the Cleaned Data with 2 decimal precision
-    st.subheader("Live Market Intel")
-    st.dataframe(df.style.format({"std_price": "{:.2f} €", "disc_price": "{:.2f} €"}), width="stretch")
-    
-    # Analytics
-    search = st.selectbox("Compare Specific Item:", sorted(df['product_name'].unique()))
-    comp_df = df[df['product_name'] == search]
-    fig = px.bar(comp_df, x='store', y='disc_price', color='store', text_auto='.2f', title=f"Price Wars: {search}")
-    st.plotly_chart(fig, width="stretch")
+    with tab1:
+        df = st.session_state['master_df']
+        st.dataframe(df, width="stretch")
+        
+    with tab2:
+        recipe = st.text_input("Procurement Goal:", "Cepelinai")
+        if st.button("🪄 Calculate Optimal Route", width="stretch"):
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-3-flash-preview")
+            
+            # Step 1: AI Decomposition
+            ings = model.generate_content(f"5 ingredients for {recipe} in LT. CSV only.").text.strip().split(',')
+            
+            # Step 2: Fuzzy Sourcing
+            basket = []
+            for ing in ings:
+                match = process.extractOne(ing.strip(), df['product_name'], scorer=fuzz.WRatio)
+                if match and match[1] > 60:
+                    basket.append(df.iloc[match[2]])
+            
+            if basket:
+                basket_df = pd.DataFrame(basket)
+                st.dataframe(basket_df, width="stretch")
+                
+                # Step 3: Route Generation
+                top_stores = basket_df['store'].unique()[:2] # Top 2 stops
+                st.subheader(f"📍 Optimal Route: {' ➔ '.join(top_stores)}")
+                
+                # Create Google Maps Link
+                origin = "Vilnius" # Or user current loc
+                stops = f"{top_stores[0]}+{top_stores[1]}" if len(top_stores)>1 else top_stores[0]
+                map_url = f"https://www.google.com/maps/dir/?api=1&destination={top_stores[-1]}&waypoints={top_stores[0]}"
+                st.link_button("🗺️ Open Navigation", map_url)
+            else:
+                st.error("No ingredients found. Upload more flyers!")
 else:
-    st.info("👈 Upload your first flyer in the sidebar to begin price analysis.")
+    st.info("The agent is idle. Upload a retailer PDF to begin.")
