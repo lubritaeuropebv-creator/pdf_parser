@@ -1,4 +1,5 @@
 streamlit
+plotly
 google-generativeai
 pdf2image
 pandas
