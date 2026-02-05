@@ -1,0 +1,7 @@
+streamlit
+google-generativeai
+pdf2image
+pandas
+pillow
+openpyxl
+rapidfuzz
