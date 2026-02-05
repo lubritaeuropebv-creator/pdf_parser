@@ -1,98 +1,108 @@
 import streamlit as st
-import json, tempfile, gc, os
 import pandas as pd
-from pdf2image import convert_from_bytes
+import json, gc
 import google.generativeai as genai
-import fitz  # PyMuPDF
+from rapidfuzz import process, fuzz
+import itertools
 
-# --- 1. MEMORY CONFIG ---
-# Set the maximum upload to 500MB, but we will process it intelligently.
-st.set_page_config(page_title="LT Price Strategist (Safe Mode)", layout="wide")
-
-def process_flyer_safely(api_key, uploaded_file, shop_name):
-    """Processes a PDF one page at a time to stay under the 1GB RAM limit."""
+# --- 1. AI RECIPE GENERATOR ---
+def ai_generate_recipe(api_key, idea):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-3-flash-preview")
     
-    extracted_data = []
-    
-    # Open PDF with fitz to get the page count without loading images
-    pdf_bytes = uploaded_file.read()
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    total_pages = len(doc)
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    prompt = f"""
+    User Idea: {idea}
+    Task: Create a recipe and a shopping list.
+    Return ONLY a JSON object:
+    {{
+      "recipe_name": "Name",
+      "ingredients": ["pienas", "kiaušiniai", "miltai"], 
+      "instructions": "Step 1, Step 2..."
+    }}
+    Note: Ingredients must be in Lithuanian to match the flyers.
+    """
+    try:
+        response = model.generate_content(prompt)
+        clean_json = response.text.strip().replace("```json", "").replace("```", "")
+        return json.loads(clean_json)
+    except: return None
 
-    for i in range(total_pages):
-        status_text.text(f"Processing {shop_name}: Page {i+1}/{total_pages}...")
-        
-        # 🟢 THE TRICK: Convert ONLY the current page (i+1) to an image
-        # This prevents the "Memory Explosion" of converting 50 pages at once.
-        images = convert_from_bytes(
-            pdf_bytes, 
-            first_page=i+1, 
-            last_page=i+1, 
-            dpi=150 # 150 is the optimal balance for Gemini 3
-        )
-        
-        if images:
-            page_img = images[0]
+# --- 2. MULTI-SHOP BASKET OPTIMIZER ---
+def optimize_basket(ingredients, df, max_shops):
+    stores = df['store'].unique()
+    best_total = float('inf')
+    best_plan = None
+    missing_items = []
+
+    # Find the best combination of N stores
+    for combo in itertools.combinations(stores, max_shops):
+        temp_subset = df[df['store'].isin(combo)]
+        current_total = 0
+        current_items = []
+        found_ingredients = set()
+
+        for ing in ingredients:
+            # Fuzzy match recipe ingredient to flyer product names
+            choices = temp_subset['product_name'].tolist()
+            match = process.extractOne(ing, choices, scorer=fuzz.WRatio)
             
-            prompt = "Extract all product data into a JSON list: name, std_price, disc_price, unit_price, disc_pct."
-            try:
-                response = model.generate_content([prompt, page_img])
-                # Clean and parse JSON
-                raw_text = response.text.strip().replace("```json", "").replace("```", "")
-                page_items = json.loads(raw_text)
-                
-                for item in page_items:
-                    item["store"] = shop_name
-                    extracted_data.append(item)
-            except Exception as e:
-                st.warning(f"Skipped page {i+1} due to error.")
-
-            # 🔴 CRITICAL: Force clear the image from RAM immediately
-            del page_img
-            del images
-            gc.collect() 
+            if match and match[1] > 60:
+                row = temp_subset[temp_subset['product_name'] == match[0]].iloc[0]
+                current_total += row['disc_price']
+                current_items.append({
+                    "Ingredient": ing,
+                    "Found As": row['product_name'],
+                    "Store": row['store'],
+                    "Price": f"{row['disc_price']:.2f}€"
+                })
+                found_ingredients.add(ing)
         
-        progress_bar.progress((i + 1) / total_pages)
+        # We want the combination that finds the MOST ingredients at the LOWEST price
+        if len(found_ingredients) >= len(ingredients) * 0.5: # At least 50% found
+            if current_total < best_total:
+                best_total = current_total
+                best_plan = (combo, current_items, current_total)
+                missing_items = [i for i in ingredients if i not in found_ingredients]
 
-    doc.close()
-    return extracted_data
+    return best_plan, missing_items
 
-# --- 2. UPDATED UI ---
-st.title("🛒 Safe-Mode Market Intelligence")
-st.info("This version processes pages one-by-one to prevent Streamlit Cloud crashes.")
+# --- 3. UI IMPLEMENTATION ---
+st.title("👨‍🍳 AI Chef & Multi-Shop Procurement")
 
-with st.sidebar:
-    api_key = st.text_input("Gemini API Key", type="password")
-    st.divider()
-    # To save more memory, we'll process shops sequentially
-    shop_choice = st.selectbox("Select Shop to Process", ["Lidl", "Maxima", "IKI", "Rimi", "Norfa"])
-    uploaded_file = st.file_uploader(f"Upload {shop_choice} Flyer", type="pdf")
-    
-    if st.button("🚀 Process Current Flyer"):
-        if api_key and uploaded_file:
-            # Initialize master list in session state if not present
-            if 'master_df' not in st.session_state:
-                st.session_state['master_df'] = pd.DataFrame()
-                
-            new_items = process_flyer_safely(api_key, uploaded_file, shop_choice)
-            new_df = pd.DataFrame(new_items)
-            
-            # Append to the existing database
-            st.session_state['master_df'] = pd.concat([st.session_state['master_df'], new_df], ignore_index=True)
-            st.success(f"Added {len(new_df)} products from {shop_choice}!")
-
-# --- 3. ANALYTICS ---
 if 'master_df' in st.session_state and not st.session_state['master_df'].empty:
     df = st.session_state['master_df']
     
-    st.subheader("📊 Combined Market Data")
-    st.dataframe(df, use_container_width=True)
+    col1, col2 = st.columns([1, 1])
     
-    if st.button("Clear All Data"):
-        st.session_state['master_df'] = pd.DataFrame()
-        st.rerun()
+    with col1:
+        st.subheader("1. What's the plan?")
+        user_idea = st.text_input("Enter a dish or idea:", "Soti vakarienė šeimai")
+        shop_count = st.slider("Max stores to visit:", 1, 5, 2)
+        exec_btn = st.button("🪄 Calculate Best Route & Recipe")
+
+    if exec_btn:
+        recipe = ai_generate_recipe(st.session_state.get('api_key', ""), user_idea)
+        
+        if recipe:
+            with col2:
+                st.subheader(f"🍴 {recipe['recipe_name']}")
+                st.write(recipe['instructions'])
+            
+            st.divider()
+            
+            # Run Optimizer
+            plan, missing = optimize_basket(recipe['ingredients'], df, shop_count)
+            
+            if plan:
+                combo, items, total = plan
+                st.subheader(f"💰 Optimized Basket: {total:.2f}€")
+                st.info(f"**Route:** {' ➡ '.join(combo)}")
+                st.table(pd.DataFrame(items))
+                
+                if missing:
+                    st.warning(f"⚠️ **Not in flyers (Full Price needed):** {', '.join(missing)}")
+            else:
+                st.error("Could not find enough ingredients in the current flyers. Try adding more shops!")
+
+else:
+    st.warning("Please upload flyer PDFs in the sidebar first to build your price database.")
