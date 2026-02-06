@@ -161,12 +161,11 @@ if not st.session_state['master_df'].empty:
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3-flash-preview")
                 
-                # 1. STANDARDIZED RECIPE GENERATION
                 recipe_prompt = f"""
                 Create a recipe for: '{user_input}'.
                 Return strictly valid JSON with:
                 - 'recipe_name': Title.
-                - 'ingredients': List of generic Lithuanian grocery terms (e.g., 'Sviestas', 'Pienas', 'Kiaušiniai').
+                - 'ingredients': List of generic Lithuanian grocery terms (e.g., 'Agurkai', 'Pomidorai', 'Aliejus').
                 - 'instructions': Short steps.
                 """
                 try:
@@ -181,41 +180,55 @@ if not st.session_state['master_df'].empty:
                     df = st.session_state['master_df']
                     ingredients = recipe_data['ingredients']
                     
-                    # --- 2. MULTI-TIER ANALYSIS ENGINE ---
+                    # --- PROCUREMENT STRATEGY ENGINE ---
                     st.divider()
                     st.subheader("🛒 Procurement Strategy Optimizer")
                     
-                    # A. GLOBAL HUSTLE (Multi-Shop Best Prices)
                     hustle_items = []
+                    missing_ingredients = []
+
+                    # 1. GLOBAL HUSTLE (Multi-Shop Best Prices)
                     for ing in ingredients:
                         matches = process.extract(ing, df['product_name'], scorer=fuzz.WRatio, limit=5)
-                        valid = [m for m in matches if m[1] >= 80] # Strict threshold to prevent mismatches
-                        if valid:
-                            candidates = df.iloc[[m[2] for m in valid]]
+                        valid_indices = [m[2] for m in matches if m[1] >= 80]
+                        
+                        if valid_indices:
+                            candidates = df.iloc[valid_indices]
+                            # SAFETY CHECK: Only access if candidates exist
                             best = candidates.sort_values(by='disc_price').iloc[0]
-                            hustle_items.append({'Ingredient': ing, 'Product': best['product_name'], 'Price': best['disc_price'], 'Store': best['store']})
+                            hustle_items.append({
+                                'Ingredient': ing, 
+                                'Product': best['product_name'], 
+                                'Price': best['disc_price'], 
+                                'Store': best['store']
+                            })
+                        else:
+                            missing_ingredients.append(ing)
 
-                    # B. ONE-STOP SHOP ANALYSIS
+                    # 2. ONE-STOP SHOP ANALYSIS
                     shop_results = []
                     for shop in df['store'].unique():
                         shop_df = df[df['store'] == shop]
-                        found_in_shop = 0
+                        found_count = 0
                         shop_total = 0
+                        
                         for ing in ingredients:
                             m = process.extractOne(ing, shop_df['product_name'], scorer=fuzz.WRatio)
                             if m and m[1] >= 80:
-                                found_in_shop += 1
-                                shop_total += shop_df.iloc[m[2]]['disc_price']
+                                found_count += 1
+                                # Map back to the original shop_df index
+                                match_idx = shop_df.index[shop_df['product_name'] == m[0]][0]
+                                shop_total += shop_df.loc[match_idx, 'disc_price']
                         
-                        if found_in_shop > 0:
+                        if found_count > 0:
                             shop_results.append({
                                 "Store": shop, 
                                 "Total": round(shop_total, 2), 
-                                "Coverage": f"{found_in_shop}/{len(ingredients)}",
-                                "Pct": (found_in_shop / len(ingredients))
+                                "Coverage": f"{found_count}/{len(ingredients)}",
+                                "Pct": (found_count / len(ingredients))
                             })
 
-                    # --- 3. DISPLAY STRATEGY TIERS ---
+                    # --- 3. DISPLAY TIERS ---
                     tab_hustle, tab_one_stop = st.tabs(["🏃 Multi-Shop (Max Savings)", "🏠 One-Stop (Convenience)"])
 
                     with tab_hustle:
@@ -223,29 +236,26 @@ if not st.session_state['master_df'].empty:
                             h_df = pd.DataFrame(hustle_items)
                             st.metric("Global Minimum Cost", f"{h_df['Price'].sum():.2f}€")
                             
-                            # INTERACTIVE SWAP WITHIN HUSTLE
-                            final_hustle = []
+                            # INTERACTIVE SWAP
                             for i, row in h_df.iterrows():
-                                col1, col2 = st.columns([1, 2])
-                                with col1:
+                                c1, c2 = st.columns([1, 2])
+                                with c1:
                                     st.write(f"**{row['Ingredient']}**")
-                                with col2:
+                                with c2:
                                     alts = process.extract(row['Ingredient'], df['product_name'], scorer=fuzz.WRatio, limit=3)
-                                    alt_indices = [m[2] for m in alts if m[1] >= 75]
-                                    alt_rows = df.iloc[alt_indices]
-                                    options = [f"{r['product_name']} ({r['disc_price']}€ @ {r['store']})" for _, r in alt_rows.iterrows()]
-                                    
-                                    choice = st.selectbox(f"Swap {row['Ingredient']}", options, key=f"h_swp_{i}", label_visibility="collapsed")
-                                    # Update logic for total if needed
-                        else:
-                            st.warning("No price data found for these ingredients.")
+                                    alt_opts = [f"{df.iloc[m[2]]['product_name']} ({df.iloc[m[2]]['disc_price']}€ @ {df.iloc[m[2]]['store']})" for m in alts if m[1] >= 75]
+                                    if alt_opts:
+                                        st.selectbox(f"Swap {row['Ingredient']}", alt_opts, key=f"h_swp_{i}", label_visibility="collapsed")
+                        
+                        if missing_ingredients:
+                            st.warning(f"⚠️ No reliable price matches for: {', '.join(missing_ingredients)}")
 
                     with tab_one_stop:
                         if shop_results:
                             s_df = pd.DataFrame(shop_results).sort_values(by=["Pct", "Total"], ascending=[False, True])
                             st.table(s_df[["Store", "Total", "Coverage"]])
                         else:
-                            st.error("No single store has these items.")
+                            st.info("No single store has these items in their flyers.")
 
                 except Exception as e:
                     st.error(f"Strategy Error: {str(e)}")
