@@ -156,79 +156,88 @@ if not st.session_state['master_df'].empty:
         with col_btn:
             generate_btn = st.button("👨‍🍳 Invent & Shop", type="primary", use_container_width=True)
 
-        if generate_btn and user_input:
-            # --- NEW: PERSON COUNT SELECTOR ---
-            num_people = st.slider("Number of people to prepare for:", 1, 10, 2)
+       if generate_btn and user_input:
+            # --- ŽMONIŲ SKAIČIAUS PASIRINKIMAS ---
+            asmenu_skaicius = st.slider("Kiek asmenų gaminsite?", 1, 10, 2)
             
-            with st.spinner("🧠 AI Strategist is analyzing market data..."):
+            with st.spinner("🧠 AI strategas analizuoja rinkos duomenis..."):
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3-flash-preview")
                 
-                # Convert flyer database to JSON context
-                market_context = st.session_state['master_df'][['product_name', 'package_size', 'disc_price', 'std_price', 'store']].to_json(orient='records')
+                # Paverčiame prekių duomenų bazę į JSON formatą Gemini analizei
+                rinkos_kontekstas = st.session_state['master_df'][['product_name', 'package_size', 'disc_price', 'std_price', 'store']].to_json(orient='records')
 
-                # 1. THE STRATEGY PROMPT (Now includes package_size and person scaling)
-                strategy_prompt = f"""
-                You are an elite grocery price strategist. 
-                Task:
-                1. Create a recipe for '{user_input}' scaled for {num_people} persons.
-                2. Match these ingredients to the provided MARKET DATA.
-                3. For each ingredient, find the semantic match (ensure category integrity).
-                4. Include the 'package_size' from the market data in your response.
-                5. Select the CHEAPEST match across all stores for the 'Hustle' route.
-                6. Find the best 'One-Stop' shop options.
+                # 1. AI STRATEGIJOS PROMPTAS
+                strategijos_promptas = f"""
+                Tu esi profesionalus pirkimų strategas. 
+                Užduotys:
+                1. Sukurk receptą patiekalui: '{user_input}', apskaičiuotą {asmenu_skaicius} asmenims.
+                2. Surask geriausiai tinkančius ingredientus pateiktuose RINKOS DUOMENYSE.
+                3. Užtikrink semantinį tikslumą (pvz., jei ingredientas yra 'Sausainiai', parink tik sausainius).
+                4. Įtrauk 'package_size' (pakuotės dydį) iš duomenų bazės.
+                5. Parink pigiausią įmanomą atitikmenį visose parduotuvėse.
+                6. Apskaičiuok 'Vieno sustojimo' pirkimo galimybes kiekvienam prekybos tinklui.
 
-                MARKET DATA:
-                {market_context}
+                RINKOS DUOMENYS:
+                {rinkos_kontekstas}
 
-                Return strictly valid JSON:
+                Atsakymą pateik griežtai tik validžiu JSON formatu (lietuvių kalba):
                 {{
-                  "recipe_name": "string",
-                  "instructions": "string",
-                  "hustle_basket": [
-                    {{"ingredient": "item", "product": "name", "size": "package_size", "price": 0.0, "std_price": 0.0, "store": "Lidl", "discount": "20%"}}
+                  "recepto_pavadinimas": "string",
+                  "instrukcijos": "string",
+                  "pigiausias_krepšelis": [
+                    {{"ingredientas": "pavadinimas", "preke": "pavadinimas iš DB", "dydis": "pakuotės dydis", "kaina": 0.0, "standartine_kaina": 0.0, "parduotuve": "Lidl", "nuolaida": "20%"}}
                   ],
-                  "one_stop_options": [
-                    {{"store": "string", "total_price": 0.0, "coverage_pct": 0}}
+                  "vieno_sustojimo_parinktys": [
+                    {{"parduotuve": "string", "bendra_kaina": 0.0, "prekiu_atitikimas_proc": 0}}
                   ]
                 }}
                 """
                 
                 try:
-                    resp = model.generate_content(strategy_prompt)
+                    resp = model.generate_content(strategijos_promptas)
                     clean_json = resp.text.strip().replace("```json", "").replace("```", "")
-                    strat_data = json.loads(clean_json)
+                    strat_duomenys = json.loads(clean_json)
                     
-                    st.success(f"🍽️ **Strategy for:** {strat_data['recipe_name']} ({num_people} persons)")
-                    with st.expander("👨‍🍳 View Cooking Steps"):
-                        st.write(strat_data['instructions'])
+                    st.success(f"🍽️ **Strategija patiekalui:** {strat_duomenys['recepto_pavadinimas']} ({asmenu_skaicius} asm.)")
+                    with st.expander("👨‍🍳 Gaminimo eiga"):
+                        st.write(strat_duomenys['instrukcijos'])
 
-                    # --- 2. DISPLAY STRATEGIC TIERS ---
-                    tab_hustle, tab_one_stop = st.tabs(["🏃 Multi-Shop (Max Savings)", "🏠 One-Stop (Convenience)"])
+                    # --- 2. STRATEGINĖS PARINKTYS ---
+                    tab_hustle, tab_one_stop = st.tabs(["🏃 Pigiausias krepšelis", "🏠 Vieno sustojimo pirkimas"])
 
                     with tab_hustle:
-                        h_df = pd.DataFrame(strat_data['hustle_basket'])
-                        hustle_total = h_df['price'].sum()
+                        h_df = pd.DataFrame(strat_duomenys['pigiausias_krepšelis'])
+                        pigiausia_suma = h_df['kaina'].sum()
                         
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.metric("Global Minimum Cost", f"{hustle_total:.2f}€")
+                            st.metric("Minimali kaina", f"{pigiausia_suma:.2f}€")
                         with col2:
-                            total_savings = (h_df['std_price'].sum()) - hustle_total
-                            st.metric("Total Realized Savings", f"{max(0, total_savings):.2f}€")
+                            sutaupymas = (h_df['standartine_kaina'].sum()) - pigiausia_suma
+                            st.metric("Sutaupyta", f"{max(0, sutaupymas):.2f}€")
 
-                        st.markdown("#### Your Optimized Procurement List")
-                        # Now including the requested 'size' column
-                        st.table(h_df[['ingredient', 'product', 'size', 'std_price', 'price', 'discount', 'store']])
+                        st.markdown("#### 🛒 Pirkinių sąrašas")
+                        st.table(h_df[['ingredientas', 'preke', 'dydis', 'standartine_kaina', 'kaina', 'nuolaida', 'parduotuve']])
+
+                        # --- NAUJA FUNKCIJA: SMS SĄRAŠAS ---
+                        st.divider()
+                        sms_tekstas = f"🛒 PIRKINIŲ SĄRAŠAS ({strat_duomenys['recepto_pavadinimas']}):\n"
+                        for _, row in h_df.iterrows():
+                            sms_tekstas += f"• {row['preke']} ({row['dydis']}) - {row['kaina']:.2f}€ @ {row['parduotuve']}\n"
+                        sms_tekstas += f"\nVISO: {pigiausia_suma:.2f}€"
+                        
+                        st.subheader("📱 Kopijuoti į telefoną")
+                        st.text_area("SMS / Messenger paruoštukas:", value=sms_tekstas, height=150)
 
                     with tab_one_stop:
-                        s_df = pd.DataFrame(strat_data['one_stop_options']).sort_values(by="total_price")
+                        s_df = pd.DataFrame(strat_duomenys['vieno_sustojimo_parinktys']).sort_values(by="bendra_kaina")
                         st.table(s_df)
                         
-                        premium = s_df.iloc[0]['total_price'] - hustle_total
-                        st.info(f"💡 The Convenience Premium is **{premium:.2f}€**. Shopping at {s_df.iloc[0]['store']} only is { (premium/hustle_total)*100:.0f}% more expensive.")
+                        priemoka = s_df.iloc[0]['bendra_kaina'] - pigiausia_suma
+                        st.info(f"💡 **Patogumo kaina:** Perkant tik {s_df.iloc[0]['parduotuve']}, permokėsite **{priemoka:.2f}€**.")
 
                 except Exception as e:
-                    st.error(f"AI Strategy Error: {str(e)}")
+                    st.error(f"AI strategijos klaida: {str(e)}")
 else:
     st.info("Upload retailer flyers to enable the Kitchen Strategist.")
