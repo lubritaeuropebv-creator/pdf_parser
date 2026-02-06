@@ -157,23 +157,26 @@ if not st.session_state['master_df'].empty:
             generate_btn = st.button("👨‍🍳 Invent & Shop", type="primary", use_container_width=True)
 
         if generate_btn and user_input:
+            # --- NEW: PERSON COUNT SELECTOR ---
+            num_people = st.slider("Number of people to prepare for:", 1, 10, 2)
+            
             with st.spinner("🧠 AI Strategist is analyzing market data..."):
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3-flash-preview")
                 
-                # Convert your current flyer database to a compact text format for Gemini to read
-                market_context = st.session_state['master_df'][['product_name', 'disc_price', 'std_price', 'store']].to_json(orient='records')
+                # Convert flyer database to JSON context
+                market_context = st.session_state['master_df'][['product_name', 'package_size', 'disc_price', 'std_price', 'store']].to_json(orient='records')
 
-                # 1. THE ALL-IN-ONE STRATEGY PROMPT
-                # We ask Gemini to handle the recipe, the semantic matching, and the price optimization
+                # 1. THE STRATEGY PROMPT (Now includes package_size and person scaling)
                 strategy_prompt = f"""
                 You are an elite grocery price strategist. 
                 Task:
-                1. Create a recipe for '{user_input}' using Lithuanian ingredients.
+                1. Create a recipe for '{user_input}' scaled for {num_people} persons.
                 2. Match these ingredients to the provided MARKET DATA.
-                3. For each ingredient, find the semantic match (e.g., if ingredient is 'Sausainiai', only match with actual cookies, never bread).
-                4. Select the CHEAPEST match across all stores for the 'Hustle' route.
-                5. Find the best 'One-Stop' shop based on coverage and total price.
+                3. For each ingredient, find the semantic match (ensure category integrity).
+                4. Include the 'package_size' from the market data in your response.
+                5. Select the CHEAPEST match across all stores for the 'Hustle' route.
+                6. Find the best 'One-Stop' shop options.
 
                 MARKET DATA:
                 {market_context}
@@ -183,7 +186,7 @@ if not st.session_state['master_df'].empty:
                   "recipe_name": "string",
                   "instructions": "string",
                   "hustle_basket": [
-                    {{"ingredient": "item", "product": "name", "price": 0.0, "std_price": 0.0, "store": "Lidl", "discount": "20%"}}
+                    {{"ingredient": "item", "product": "name", "size": "package_size", "price": 0.0, "std_price": 0.0, "store": "Lidl", "discount": "20%"}}
                   ],
                   "one_stop_options": [
                     {{"store": "string", "total_price": 0.0, "coverage_pct": 0}}
@@ -196,7 +199,7 @@ if not st.session_state['master_df'].empty:
                     clean_json = resp.text.strip().replace("```json", "").replace("```", "")
                     strat_data = json.loads(clean_json)
                     
-                    st.success(f"🍽️ **Strategy for:** {strat_data['recipe_name']}")
+                    st.success(f"🍽️ **Strategy for:** {strat_data['recipe_name']} ({num_people} persons)")
                     with st.expander("👨‍🍳 View Cooking Steps"):
                         st.write(strat_data['instructions'])
 
@@ -211,13 +214,12 @@ if not st.session_state['master_df'].empty:
                         with col1:
                             st.metric("Global Minimum Cost", f"{hustle_total:.2f}€")
                         with col2:
-                            # Calculate realized savings from standard prices
                             total_savings = (h_df['std_price'].sum()) - hustle_total
                             st.metric("Total Realized Savings", f"{max(0, total_savings):.2f}€")
 
                         st.markdown("#### Your Optimized Procurement List")
-                        # Displaying Standard Price and Discount clearly as requested
-                        st.table(h_df[['ingredient', 'product', 'std_price', 'price', 'discount', 'store']])
+                        # Now including the requested 'size' column
+                        st.table(h_df[['ingredient', 'product', 'size', 'std_price', 'price', 'discount', 'store']])
 
                     with tab_one_stop:
                         s_df = pd.DataFrame(strat_data['one_stop_options']).sort_values(by="total_price")
@@ -228,6 +230,5 @@ if not st.session_state['master_df'].empty:
 
                 except Exception as e:
                     st.error(f"AI Strategy Error: {str(e)}")
-                               
 else:
     st.info("Upload retailer flyers to enable the Kitchen Strategist.")
