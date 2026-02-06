@@ -161,11 +161,12 @@ if not st.session_state['master_df'].empty:
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3-flash-preview")
                 
+                # 1. STANDARDIZED RECIPE GENERATION
                 recipe_prompt = f"""
                 Create a recipe for: '{user_input}'.
                 Return strictly valid JSON with:
                 - 'recipe_name': Title.
-                - 'ingredients': List of generic Lithuanian grocery terms (e.g., 'Agurkai', 'Pomidorai', 'Aliejus').
+                - 'ingredients': List of generic Lithuanian grocery terms (e.g., 'Sviestas', 'Pienas', 'Kvietiniai miltai').
                 - 'instructions': Short steps.
                 """
                 try:
@@ -180,82 +181,85 @@ if not st.session_state['master_df'].empty:
                     df = st.session_state['master_df']
                     ingredients = recipe_data['ingredients']
                     
-                    # --- PROCUREMENT STRATEGY ENGINE ---
+                    # --- 2. HIGH-PRECISION PROCUREMENT ENGINE ---
                     st.divider()
                     st.subheader("🛒 Procurement Strategy Optimizer")
                     
                     hustle_items = []
                     missing_ingredients = []
+                    
+                    # Keywords that often cause false positives (like 'Malta' in coffee vs spices)
+                    desc_ignore = ["malta", "maltas", "sviežias", "sviežia", "extra", "virgin"]
 
-                    # 1. GLOBAL HUSTLE (Multi-Shop Best Prices)
                     for ing in ingredients:
-                        matches = process.extract(ing, df['product_name'], scorer=fuzz.WRatio, limit=5)
-                        valid_indices = [m[2] for m in matches if m[1] >= 80]
-                        
-                        if valid_indices:
-                            candidates = df.iloc[valid_indices]
-                            # SAFETY CHECK: Only access if candidates exist
-                            best = candidates.sort_values(by='disc_price').iloc[0]
-                            hustle_items.append({
-                                'Ingredient': ing, 
-                                'Product': best['product_name'], 
-                                'Price': best['disc_price'], 
-                                'Store': best['store']
-                            })
-                        else:
-                            missing_ingredients.append(ing)
+                        clean_ing = ing.lower()
+                        for word in desc_ignore:
+                            clean_ing = clean_ing.replace(word, "").strip()
 
-                    # 2. ONE-STOP SHOP ANALYSIS
+                        # Strategy: Try exact word match first, then strict fuzzy match (85+)
+                        exact_candidates = df[df['product_name'].str.contains(clean_ing, case=False, na=False)]
+                        
+                        if not exact_candidates.empty:
+                            best = exact_candidates.sort_values(by='disc_price').iloc[0]
+                            hustle_items.append({'Ingredient': ing, 'Product': best['product_name'], 'Price': best['disc_price'], 'Store': best['store']})
+                        else:
+                            matches = process.extract(ing, df['product_name'], scorer=fuzz.token_set_ratio, limit=5)
+                            valid_indices = [m[2] for m in matches if m[1] >= 85]
+                            if valid_indices:
+                                best = df.iloc[valid_indices].sort_values(by='disc_price').iloc[0]
+                                hustle_items.append({'Ingredient': ing, 'Product': best['product_name'], 'Price': best['disc_price'], 'Store': best['store']})
+                            else:
+                                missing_ingredients.append(ing)
+
+                    # --- 3. ONE-STOP SHOP ANALYSIS ---
                     shop_results = []
                     for shop in df['store'].unique():
                         shop_df = df[df['store'] == shop]
                         found_count = 0
                         shop_total = 0
-                        
                         for ing in ingredients:
-                            m = process.extractOne(ing, shop_df['product_name'], scorer=fuzz.WRatio)
-                            if m and m[1] >= 80:
+                            m = process.extractOne(ing, shop_df['product_name'], scorer=fuzz.token_set_ratio)
+                            if m and m[1] >= 85:
                                 found_count += 1
-                                # Map back to the original shop_df index
-                                match_idx = shop_df.index[shop_df['product_name'] == m[0]][0]
-                                shop_total += shop_df.loc[match_idx, 'disc_price']
+                                shop_total += shop_df[shop_df['product_name'] == m[0]]['disc_price'].min()
                         
                         if found_count > 0:
                             shop_results.append({
-                                "Store": shop, 
-                                "Total": round(shop_total, 2), 
+                                "Store": shop, "Total": round(shop_total, 2), 
                                 "Coverage": f"{found_count}/{len(ingredients)}",
                                 "Pct": (found_count / len(ingredients))
                             })
 
-                    # --- 3. DISPLAY TIERS ---
+                    # --- 4. DISPLAY TIERS & INTERACTIVE SWAP ---
                     tab_hustle, tab_one_stop = st.tabs(["🏃 Multi-Shop (Max Savings)", "🏠 One-Stop (Convenience)"])
 
                     with tab_hustle:
                         if hustle_items:
                             h_df = pd.DataFrame(hustle_items)
-                            st.metric("Global Minimum Cost", f"{h_df['Price'].sum():.2f}€")
+                            hustle_total = h_df['Price'].sum()
+                            st.metric("Global Minimum Cost", f"{hustle_total:.2f}€")
                             
-                            # INTERACTIVE SWAP
                             for i, row in h_df.iterrows():
                                 c1, c2 = st.columns([1, 2])
                                 with c1:
                                     st.write(f"**{row['Ingredient']}**")
                                 with c2:
-                                    alts = process.extract(row['Ingredient'], df['product_name'], scorer=fuzz.WRatio, limit=3)
+                                    alts = process.extract(row['Ingredient'], df['product_name'], scorer=fuzz.token_set_ratio, limit=3)
                                     alt_opts = [f"{df.iloc[m[2]]['product_name']} ({df.iloc[m[2]]['disc_price']}€ @ {df.iloc[m[2]]['store']})" for m in alts if m[1] >= 75]
                                     if alt_opts:
                                         st.selectbox(f"Swap {row['Ingredient']}", alt_opts, key=f"h_swp_{i}", label_visibility="collapsed")
                         
                         if missing_ingredients:
-                            st.warning(f"⚠️ No reliable price matches for: {', '.join(missing_ingredients)}")
+                            st.warning(f"⚠️ No matches for: {', '.join(missing_ingredients)}")
 
                     with tab_one_stop:
                         if shop_results:
                             s_df = pd.DataFrame(shop_results).sort_values(by=["Pct", "Total"], ascending=[False, True])
+                            best_one_stop = s_df.iloc[0]['Total']
+                            variance = best_one_stop - hustle_total
+                            
+                            st.metric("One-Stop Premium", f"+{variance:.2f}€", help="Difference between single shop and multi-shop strategy")
                             st.table(s_df[["Store", "Total", "Coverage"]])
-                        else:
-                            st.info("No single store has these items in their flyers.")
 
                 except Exception as e:
                     st.error(f"Strategy Error: {str(e)}")
