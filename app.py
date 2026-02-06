@@ -160,33 +160,40 @@ if not st.session_state['master_df'].empty:
             # --- ŽMONIŲ SKAIČIAUS PASIRINKIMAS ---
             asmenu_skaicius = st.slider("Kiek asmenų gaminsite?", 1, 10, 2)
             
-            with st.spinner("🧠 AI strategas analizuoja rinkos duomenis..."):
+            with st.spinner("🧠 AI strategas analizuoja rinkos duomenis ir grupines nuolaidas..."):
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3-flash-preview")
                 
                 # Paverčiame prekių duomenų bazę į JSON formatą Gemini analizei
-                rinkos_kontekstas = st.session_state['master_df'][['product_name', 'package_size', 'disc_price', 'std_price', 'store']].to_json(orient='records')
+                rinkos_kontekstas = st.session_state['master_df'][['product_name', 'package_size', 'disc_price', 'std_price', 'discount_pct', 'store']].to_json(orient='records')
 
-                # 1. AI STRATEGIJOS PROMPTAS
+                # 1. AI STRATEGIJOS PROMPTAS (Su grupinėmis nuolaidomis)
                 strategijos_promptas = f"""
                 Tu esi profesionalus pirkimų strategas. 
                 Užduotys:
                 1. Sukurk receptą patiekalui: '{user_input}', apskaičiuotą {asmenu_skaicius} asmenims.
                 2. Surask geriausiai tinkančius ingredientus pateiktuose RINKOS DUOMENYSE.
-                3. Užtikrink semantinį tikslumą (pvz., jei ingredientas yra 'Sausainiai', parink tik sausainius).
-                4. Įtrauk 'package_size' (pakuotės dydį) iš duomenų bazės.
+                3. SVARBU: Atpažink grupines nuolaidas (pvz., jei recepte yra agurkai, o duomenyse yra 'Ilgavaisiai agurkai' arba nuolaida visai kategorijai).
+                4. Įtrauk 'package_size' (pakuotės dydį) ir tikslią nuolaidą % (jei yra).
                 5. Parink pigiausią įmanomą atitikmenį visose parduotuvėse.
-                6. Apskaičiuok 'Vieno sustojimo' pirkimo galimybes kiekvienam prekybos tinklui.
 
                 RINKOS DUOMENYS:
                 {rinkos_kontekstas}
 
-                Atsakymą pateik griežtai tik validžiu JSON formatu (lietuvių kalba):
+                Atsakymą pateik JSON formatu (lietuvių kalba):
                 {{
                   "recepto_pavadinimas": "string",
                   "instrukcijos": "string",
                   "pigiausias_krepšelis": [
-                    {{"ingredientas": "pavadinimas", "preke": "pavadinimas iš DB", "dydis": "pakuotės dydis", "kaina": 0.0, "standartine_kaina": 0.0, "parduotuve": "Lidl", "nuolaida": "20%"}}
+                    {{
+                      "ingredientas": "pavadinimas", 
+                      "preke": "pavadinimas iš DB", 
+                      "dydis": "pakuotės dydis", 
+                      "kaina": 0.0, 
+                      "standartine_kaina": 0.0, 
+                      "parduotuve": "Parduotuvė", 
+                      "nuolaida": "pvz. 40%"
+                    }}
                   ],
                   "vieno_sustojimo_parinktys": [
                     {{"parduotuve": "string", "bendra_kaina": 0.0, "prekiu_atitikimas_proc": 0}}
@@ -214,21 +221,25 @@ if not st.session_state['master_df'].empty:
                         with col1:
                             st.metric("Minimali kaina", f"{pigiausia_suma:.2f}€")
                         with col2:
-                            sutaupymas = (h_df['standartine_kaina'].sum()) - pigiausia_suma
+                            # Apskaičiuojame sutaupymą tik jei standartinė kaina > 0
+                            std_sum = h_df[h_df['standartine_kaina'] > 0]['standartine_kaina'].sum()
+                            disc_sum = h_df[h_df['standartine_kaina'] > 0]['kaina'].sum()
+                            sutaupymas = std_sum - disc_sum
                             st.metric("Sutaupyta", f"{max(0, sutaupymas):.2f}€")
 
-                        st.markdown("#### 🛒 Pirkinių sąrašas")
+                        st.markdown("#### 🛒 Pirkinių sąrašas (su pakuočių dydžiais)")
                         st.table(h_df[['ingredientas', 'preke', 'dydis', 'standartine_kaina', 'kaina', 'nuolaida', 'parduotuve']])
 
-                        # --- NAUJA FUNKCIJA: SMS SĄRAŠAS ---
+                        # --- SMS SĄRAŠAS ---
                         st.divider()
                         sms_tekstas = f"🛒 PIRKINIŲ SĄRAŠAS ({strat_duomenys['recepto_pavadinimas']}):\n"
                         for _, row in h_df.iterrows():
+                            # SMS sąraše nurodome ir pakuotės dydį, kad pirkėjas neklystų
                             sms_tekstas += f"• {row['preke']} ({row['dydis']}) - {row['kaina']:.2f}€ @ {row['parduotuve']}\n"
                         sms_tekstas += f"\nVISO: {pigiausia_suma:.2f}€"
                         
                         st.subheader("📱 Kopijuoti į telefoną")
-                        st.text_area("SMS / Messenger paruoštukas:", value=sms_tekstas, height=150)
+                        st.text_area("SMS / Messenger paruoštukas:", value=sms_tekstas, height=180)
 
                     with tab_one_stop:
                         s_df = pd.DataFrame(strat_duomenys['vieno_sustojimo_parinktys']).sort_values(by="bendra_kaina")
