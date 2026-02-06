@@ -157,14 +157,13 @@ if not st.session_state['master_df'].empty:
             generate_btn = st.button("👨‍🍳 Invent & Shop", type="primary", use_container_width=True)
 
         if generate_btn and user_input:
-            with st.spinner("Creating recipe and scanning flyers..."):
+            with st.spinner("Analyzing market data and creating strategy..."):
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3-flash-preview")
                 
-                # 1. OPTIMIZED RECIPE GENERATION
-                # We force the AI to use standard Lithuanian terms to improve matching accuracy.
+                # 1. STANDARDIZED RECIPE GENERATION
                 recipe_prompt = f"""
-                Create a simple recipe based on: '{user_input}'.
+                Create a recipe for: '{user_input}'.
                 Return strictly valid JSON with:
                 - 'recipe_name': Title.
                 - 'ingredients': List of generic Lithuanian grocery terms (e.g., 'Sviestas', 'Pienas', 'Kiaušiniai').
@@ -179,108 +178,77 @@ if not st.session_state['master_df'].empty:
                     with st.expander("View Cooking Instructions"):
                         st.write(recipe_data['instructions'])
 
-                    # 2. REFINED MATCHING LOGIC
-                    optimized_basket = []
-                    missing_ingredients = []
                     df = st.session_state['master_df']
+                    ingredients = recipe_data['ingredients']
                     
-                    for ingredient in recipe_data['ingredients']:
-                        # Increase threshold to 80% to avoid "Sausainiai/Ciabatta" style mismatches
-                        matches = process.extract(ingredient, df['product_name'], scorer=fuzz.WRatio, limit=5)
-                        valid_matches = [m for m in matches if m[1] >= 80]
+                    # --- 2. MULTI-TIER ANALYSIS ENGINE ---
+                    st.divider()
+                    st.subheader("🛒 Procurement Strategy Optimizer")
+                    
+                    # A. GLOBAL HUSTLE (Multi-Shop Best Prices)
+                    hustle_items = []
+                    for ing in ingredients:
+                        matches = process.extract(ing, df['product_name'], scorer=fuzz.WRatio, limit=5)
+                        valid = [m for m in matches if m[1] >= 80] # Strict threshold to prevent mismatches
+                        if valid:
+                            candidates = df.iloc[[m[2] for m in valid]]
+                            best = candidates.sort_values(by='disc_price').iloc[0]
+                            hustle_items.append({'Ingredient': ing, 'Product': best['product_name'], 'Price': best['disc_price'], 'Store': best['store']})
+
+                    # B. ONE-STOP SHOP ANALYSIS
+                    shop_results = []
+                    for shop in df['store'].unique():
+                        shop_df = df[df['store'] == shop]
+                        found_in_shop = 0
+                        shop_total = 0
+                        for ing in ingredients:
+                            m = process.extractOne(ing, shop_df['product_name'], scorer=fuzz.WRatio)
+                            if m and m[1] >= 80:
+                                found_in_shop += 1
+                                shop_total += shop_df.iloc[m[2]]['disc_price']
                         
-                        if valid_matches:
-                            # From the high-confidence matches, pick the one with the lowest price
-                            valid_indices = [m[2] for m in valid_matches]
-                            candidates = df.iloc[valid_indices]
-                            best_deal = candidates.sort_values(by='disc_price', ascending=True).iloc[0]
-                            
-                            optimized_basket.append({
-                                'Ingredient': ingredient,
-                                'Product': best_deal['product_name'],
-                                'Price': best_deal['disc_price'],
-                                'Store': best_deal['store']
+                        if found_in_shop > 0:
+                            shop_results.append({
+                                "Store": shop, 
+                                "Total": round(shop_total, 2), 
+                                "Coverage": f"{found_in_shop}/{len(ingredients)}",
+                                "Pct": (found_in_shop / len(ingredients))
                             })
-                        else:
-                            missing_ingredients.append(ingredient)
 
-                    # 3. MULTI-TIER PROCUREMENT STRATEGY
-                    if optimized_basket:
-                        st.divider()
-                        st.subheader("🛒 Smart Cart Optimizer")
-                        
-                        # Data setup for analysis
-                        opt_df = pd.DataFrame(optimized_basket)
-                        all_shops = df['store'].unique()
-                        total_ingredients = len(recipe_data['ingredients'])
-                        
-                        # --- CALCULATION ENGINE ---
-                        shop_analysis = []
-                        for shop in all_shops:
-                            # Filter the master DB for this shop and match against recipe ingredients
-                            shop_items = []
-                            shop_total = 0
-                            found_count = 0
+                    # --- 3. DISPLAY STRATEGY TIERS ---
+                    tab_hustle, tab_one_stop = st.tabs(["🏃 Multi-Shop (Max Savings)", "🏠 One-Stop (Convenience)"])
+
+                    with tab_hustle:
+                        if hustle_items:
+                            h_df = pd.DataFrame(hustle_items)
+                            st.metric("Global Minimum Cost", f"{h_df['Price'].sum():.2f}€")
                             
-                            for ing in recipe_data['ingredients']:
-                                # Higher threshold (80) to ensure quality matches per shop
-                                m = process.extractOne(ing, df[df['store'] == shop]['product_name'], scorer=fuzz.WRatio)
-                                if m and m[1] >= 80:
-                                    price = df.iloc[m[2]]['disc_price']
-                                    shop_total += price
-                                    found_count += 1
-                                    shop_items.append(ing)
-                            
-                            coverage = (found_count / total_ingredients) * 100
-                            if found_count > 0:
-                                shop_analysis.append({
-                                    "Store": shop,
-                                    "Total Price": round(shop_total, 2),
-                                    "Coverage": f"{found_count}/{total_ingredients} ({coverage:.0f}%)",
-                                    "Missing": total_ingredients - found_count,
-                                    "Score": coverage - (shop_total / 10) # Simple heuristic: high coverage, low price
-                                })
-
-                        # --- DISPLAY TIERS ---
-                        t1, t2 = st.tabs(["📊 One-Stop Shop (Convenience)", "🏃 Multi-Shop (Max Savings)"])
-
-                        with t1:
-                            st.markdown("#### Best Single-Store Options")
-                            if shop_analysis:
-                                analysis_df = pd.DataFrame(shop_analysis).sort_values(by="Score", ascending=False)
-                                st.table(analysis_df[["Store", "Total Price", "Coverage", "Missing"]])
-                                st.info("💡 Pro Tip: The 'Best' shop balances price with how many items they actually have in stock.")
-                            else:
-                                st.warning("No single shop has a high-confidence match for these items.")
-
-                        with t2:
-                            col_a, col_b = st.columns([2, 1])
-                            with col_a:
-                                st.markdown("#### The 'Hustle' Route (Lowest Price Globally)")
-                                st.dataframe(opt_df[['Ingredient', 'Product', 'Price', 'Store']], hide_index=True)
-                            
-                            with col_b:
-                                total_hustle = opt_df['Price'].sum()
-                                st.metric("Global Minimum", f"{total_hustle:.2f}€")
-                                st.write("**Store Split:**")
-                                st.write(opt_df['Store'].value_counts())
-
-                        # --- SWAP FEATURE (Embedded for the 'Hustle' route) ---
-                        with st.expander("🔄 Manually Swap/Refine Hustle Items"):
+                            # INTERACTIVE SWAP WITHIN HUSTLE
                             final_hustle = []
-                            for i, item in enumerate(optimized_basket):
-                                alt_matches = process.extract(item['Ingredient'], df['product_name'], scorer=fuzz.WRatio, limit=3)
-                                alt_indices = [m[2] for m in alt_matches if m[1] >= 80]
-                                alt_df = df.iloc[alt_indices]
-                                options = [f"{r['product_name']} | {r['disc_price']}€ ({r['store']})" for _, r in alt_df.iterrows()]
-                                
-                                if options:
-                                    sel = st.selectbox(f"Refine: {item['Ingredient']}", options, key=f"swp_{i}")
-                                    # Logic to capture refined price for a final summary could go here
+                            for i, row in h_df.iterrows():
+                                col1, col2 = st.columns([1, 2])
+                                with col1:
+                                    st.write(f"**{row['Ingredient']}**")
+                                with col2:
+                                    alts = process.extract(row['Ingredient'], df['product_name'], scorer=fuzz.WRatio, limit=3)
+                                    alt_indices = [m[2] for m in alts if m[1] >= 75]
+                                    alt_rows = df.iloc[alt_indices]
+                                    options = [f"{r['product_name']} ({r['disc_price']}€ @ {r['store']})" for _, r in alt_rows.iterrows()]
+                                    
+                                    choice = st.selectbox(f"Swap {row['Ingredient']}", options, key=f"h_swp_{i}", label_visibility="collapsed")
+                                    # Update logic for total if needed
+                        else:
+                            st.warning("No price data found for these ingredients.")
+
+                    with tab_one_stop:
+                        if shop_results:
+                            s_df = pd.DataFrame(shop_results).sort_values(by=["Pct", "Total"], ascending=[False, True])
+                            st.table(s_df[["Store", "Total", "Coverage"]])
+                        else:
+                            st.error("No single store has these items.")
 
                 except Exception as e:
-                    st.error(f"Logic Error: {str(e)}")
-
-                  
+                    st.error(f"Strategy Error: {str(e)}")
+                               
 else:
     st.info("Upload retailer flyers to enable the Kitchen Strategist.")
