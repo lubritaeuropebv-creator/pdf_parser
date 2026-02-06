@@ -156,7 +156,7 @@ if not st.session_state['master_df'].empty:
         with col_btn:
             generate_btn = st.button("👨‍🍳 Invent & Shop", type="primary", use_container_width=True)
 
-       if generate_btn and user_input:
+    if generate_btn and user_input:
             # --- ŽMONIŲ SKAIČIAUS PASIRINKIMAS ---
             asmenu_skaicius = st.slider("Kiek asmenų gaminsite?", 1, 10, 2)
             
