@@ -133,7 +133,7 @@ if not st.session_state['last_batch_df'].empty:
         st.download_button(f"Save {st.session_state['last_shop_name']} CSV", csv_batch, "batch.csv")
 
 if not st.session_state['master_df'].empty:
-    tab1, tab2 = st.tabs(["📊 Market Analytics", "👨‍🍳 AI Recipe & Basket"])
+    tab1, tab2, tab3 = st.tabs(["📊 Rinkos apžvalga", "🍳 AI Receptai ir krepšelis", "🛒 Greitas prekių krepšelis"])
     
     # --- TAB 1: DATA BROWSER ---
     with tab1:
