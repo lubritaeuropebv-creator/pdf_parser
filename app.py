@@ -221,20 +221,27 @@ if not st.session_state['master_df'].empty:
                         with col1:
                             st.metric("Minimali kaina", f"{pigiausia_suma:.2f}€")
                         with col2:
-                            # Apskaičiuojame sutaupymą tik jei standartinė kaina > 0
                             std_sum = h_df[h_df['standartine_kaina'] > 0]['standartine_kaina'].sum()
                             disc_sum = h_df[h_df['standartine_kaina'] > 0]['kaina'].sum()
                             sutaupymas = std_sum - disc_sum
                             st.metric("Sutaupyta", f"{max(0, sutaupymas):.2f}€")
 
                         st.markdown("#### 🛒 Pirkinių sąrašas (su pakuočių dydžiais)")
-                        st.table(h_df[['ingredientas', 'preke', 'dydis', 'standartine_kaina', 'kaina', 'nuolaida', 'parduotuve']])
+                        
+                        # --- ATNAUJINTAS FORMATAVIMAS (2 skaitmenys po kablelio) ---
+                        display_df = h_df[['ingredientas', 'preke', 'dydis', 'standartine_kaina', 'kaina', 'nuolaida', 'parduotuve']].copy()
+                        
+                        # Suformatuojame kainų stulpelius kaip tekstą su dviem nuliais
+                        display_df['standartine_kaina'] = display_df['standartine_kaina'].apply(lambda x: f"{x:.2f}€" if x > 0 else "Nėra")
+                        display_df['kaina'] = display_df['kaina'].apply(lambda x: f"{x:.2f}€")
+                        
+                        st.table(display_df)
 
                         # --- SMS SĄRAŠAS ---
                         st.divider()
                         sms_tekstas = f"🛒 PIRKINIŲ SĄRAŠAS ({strat_duomenys['recepto_pavadinimas']}):\n"
                         for _, row in h_df.iterrows():
-                            # SMS sąraše nurodome ir pakuotės dydį, kad pirkėjas neklystų
+                            # SMS sąraše taip pat užtikriname 2 skaitmenis
                             sms_tekstas += f"• {row['preke']} ({row['dydis']}) - {row['kaina']:.2f}€ @ {row['parduotuve']}\n"
                         sms_tekstas += f"\nVISO: {pigiausia_suma:.2f}€"
                         
