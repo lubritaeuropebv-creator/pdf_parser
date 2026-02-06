@@ -185,29 +185,41 @@ if not st.session_state['master_df'].empty:
                     st.divider()
                     st.subheader("🛒 Procurement Strategy Optimizer")
                     
+                   # --- REFINED HIGH-PRECISION MATCHING ---
                     hustle_items = []
                     missing_ingredients = []
-                    
-                    # Keywords that often cause false positives (like 'Malta' in coffee vs spices)
-                    desc_ignore = ["malta", "maltas", "sviežias", "sviežia", "extra", "virgin"]
+                    df = st.session_state['master_df']
+                    ingredients = recipe_data['ingredients']
 
                     for ing in ingredients:
-                        clean_ing = ing.lower()
-                        for word in desc_ignore:
-                            clean_ing = clean_ing.replace(word, "").strip()
-
-                        # Strategy: Try exact word match first, then strict fuzzy match (85+)
-                        exact_candidates = df[df['product_name'].str.contains(clean_ing, case=False, na=False)]
+                        clean_ing = ing.lower().strip()
                         
-                        if not exact_candidates.empty:
-                            best = exact_candidates.sort_values(by='disc_price').iloc[0]
-                            hustle_items.append({'Ingredient': ing, 'Product': best['product_name'], 'Price': best['disc_price'], 'Store': best['store']})
+                        # STEP 1: Strict Token Matching (Prevents "Coffee vs Paprika")
+                        matches = process.extract(clean_ing, df['product_name'], scorer=fuzz.token_set_ratio, limit=10)
+                        valid_indices = [m[2] for m in matches if m[1] >= 80] # Adjusted to 80 for better recall
+                        
+                        if valid_indices:
+                            candidates = df.iloc[valid_indices]
+                            best = candidates.sort_values(by='disc_price').iloc[0]
+                            hustle_items.append({
+                                'Ingredient': ing, 
+                                'Product': best['product_name'], 
+                                'Price': best['disc_price'], 
+                                'Store': best['store']
+                            })
                         else:
-                            matches = process.extract(ing, df['product_name'], scorer=fuzz.token_set_ratio, limit=5)
-                            valid_indices = [m[2] for m in matches if m[1] >= 85]
-                            if valid_indices:
-                                best = df.iloc[valid_indices].sort_values(by='disc_price').iloc[0]
-                                hustle_items.append({'Ingredient': ing, 'Product': best['product_name'], 'Price': best['disc_price'], 'Store': best['store']})
+                            # STEP 2: Fallback - Simple Containment Check
+                            # This catches "Sausainiai" inside "Sondey Sausainiai įvairių rūšių"
+                            fallback_df = df[df['product_name'].str.contains(clean_ing, case=False, na=False)]
+                            
+                            if not fallback_df.empty:
+                                best = fallback_df.sort_values(by='disc_price').iloc[0]
+                                hustle_items.append({
+                                    'Ingredient': ing, 
+                                    'Product': best['product_name'], 
+                                    'Price': best['disc_price'], 
+                                    'Store': best['store']
+                                })
                             else:
                                 missing_ingredients.append(ing)
 
