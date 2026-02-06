@@ -204,22 +204,61 @@ if not st.session_state['master_df'].empty:
                         else:
                             missing_ingredients.append(ingredient)
 
-                    # 3. DISPLAY PROCUREMENT STRATEGY
+                    # 3. DISPLAY PROCUREMENT STRATEGY WITH SWAP FEATURE
                     if optimized_basket:
-                        opt_df = pd.DataFrame(optimized_basket)
-                        
                         st.divider()
-                        st.subheader("🛒 Procurement Strategy")
+                        st.subheader("🛒 Procurement Strategy & Swap")
+                        
+                        final_selections = []
+                        
+                        # Create an interactive list for swapping
+                        for i, item in enumerate(optimized_basket):
+                            col_label, col_swap = st.columns([2, 3])
+                            
+                            with col_label:
+                                st.markdown(f"**{item['Ingredient']}**")
+                                st.caption(f"Default: {item['Product']} ({item['Price']}€ at {item['Store']})")
+                            
+                            with col_swap:
+                                # Get top 3 alternatives for this specific ingredient
+                                alt_matches = process.extract(item['Ingredient'], df['product_name'], scorer=fuzz.WRatio, limit=3)
+                                alt_indices = [m[2] for m in alt_matches if m[1] >= 80]
+                                alt_df = df.iloc[alt_indices]
+                                
+                                # Create display strings for the dropdown
+                                options = [f"{r['product_name']} | {r['disc_price']}€ ({r['store']})" for _, r in alt_df.iterrows()]
+                                
+                                selected_option = st.selectbox(
+                                    f"Swap {item['Ingredient']}",
+                                    options=options,
+                                    index=0,
+                                    key=f"swap_{i}",
+                                    label_visibility="collapsed"
+                                )
+                                
+                                # Parse the selected choice back into our basket
+                                selected_index = options.index(selected_option)
+                                chosen_row = alt_df.iloc[selected_index]
+                                final_selections.append({
+                                    'Ingredient': item['Ingredient'],
+                                    'Product': chosen_row['product_name'],
+                                    'Price': chosen_row['disc_price'],
+                                    'Store': chosen_row['store']
+                                })
+
+                        # Final Summary Table
+                        st.divider()
+                        final_df = pd.DataFrame(final_selections)
                         
                         col_hustle, col_stats = st.columns(2)
                         with col_hustle:
-                            st.markdown("#### 🏃 The 'Hustle' Route (Best Prices)")
-                            st.metric("Total Basket Price", f"{opt_df['Price'].sum():.2f}€")
-                            st.dataframe(opt_df[['Ingredient', 'Product', 'Price', 'Store']], hide_index=True)
+                            st.markdown("#### 🏃 Your Custom Basket")
+                            st.metric("Total Price", f"{final_df['Price'].sum():.2f}€")
+                            st.dataframe(final_df[['Product', 'Price', 'Store']], hide_index=True)
                         
                         with col_stats:
-                            st.markdown("#### 🏪 Availability by Store")
-                            store_counts = opt_df['Store'].value_counts().reset_index()
+                            st.markdown("#### 🏪 Store Coverage")
+                            store_counts = final_df['Store'].value_counts().reset_index()
                             store_counts.columns = ['Store', 'Items Found']
                             st.table(store_counts)
 
