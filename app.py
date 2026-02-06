@@ -229,11 +229,6 @@ if not st.session_state['master_df'].empty:
                 except Exception as e:
                     st.error(f"Logic Error: {str(e)}")
 
-                        if missing_ingredients:
-                            st.error(f"⚠️ Could not find prices for: {', '.join(missing_ingredients)}")
-
-                except Exception as e:
-                    st.error(f"Recipe Generation Error: {str(e)}")
-
+                  
 else:
     st.info("Upload retailer flyers to enable the Kitchen Strategist.")
