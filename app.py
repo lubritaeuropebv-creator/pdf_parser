@@ -152,7 +152,7 @@ if not st.session_state['master_df'].empty:
         st.markdown("### 💡 From Idea to Optimized Table")
         col_input, col_btn = st.columns([4, 1])
         with col_input:
-            user_input = st.text_input("What do you have? Or what do you crave?", placeholder="e.g., 'I have eggs and tomatoes' OR 'Something spicy for dinner'")
+            user_input = st.text_input("What do you have? Or what do you crave?", placeholder="e.g., 'I have eggs and tomatoes'")
         with col_btn:
             generate_btn = st.button("👨‍🍳 Invent & Shop", type="primary", use_container_width=True)
 
@@ -161,13 +161,14 @@ if not st.session_state['master_df'].empty:
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3-flash-preview")
                 
-                # 1. GENERATE RECIPE
+                # 1. OPTIMIZED RECIPE GENERATION
+                # We force the AI to use standard Lithuanian terms to improve matching accuracy.
                 recipe_prompt = f"""
-                Create a simple, delicious recipe based on: '{user_input}'.
+                Create a simple recipe based on: '{user_input}'.
                 Return strictly valid JSON with:
-                - 'recipe_name': Title of the dish.
-                - 'ingredients': A list of generic Lithuanian grocery ingredients (e.g., ['Vištienos krūtinėlė', 'Ryžiai']).
-                - 'instructions': Short cooking steps.
+                - 'recipe_name': Title.
+                - 'ingredients': List of generic Lithuanian grocery terms (e.g., 'Sviestas', 'Pienas', 'Kiaušiniai').
+                - 'instructions': Short steps.
                 """
                 try:
                     resp = model.generate_content(recipe_prompt)
@@ -178,97 +179,55 @@ if not st.session_state['master_df'].empty:
                     with st.expander("View Cooking Instructions"):
                         st.write(recipe_data['instructions'])
 
-                    # 2. MATCH INGREDIENTS TO DATABASE
-                    basket_items = []
-                    found_ingredients = []
+                    # 2. REFINED MATCHING LOGIC
+                    optimized_basket = []
                     missing_ingredients = []
-                    
                     df = st.session_state['master_df']
                     
                     for ingredient in recipe_data['ingredients']:
-                        # Fuzzy match ingredient to product names
-                        match = process.extractOne(ingredient, df['product_name'], scorer=fuzz.WRatio)
-                        if match and match[1] > 50: # Threshold
-                            best_product = df.iloc[match[2]]
-                            basket_items.append({
+                        # Increase threshold to 80% to avoid "Sausainiai/Ciabatta" style mismatches
+                        matches = process.extract(ingredient, df['product_name'], scorer=fuzz.WRatio, limit=5)
+                        valid_matches = [m for m in matches if m[1] >= 80]
+                        
+                        if valid_matches:
+                            # From the high-confidence matches, pick the one with the lowest price
+                            valid_indices = [m[2] for m in valid_matches]
+                            candidates = df.iloc[valid_indices]
+                            best_deal = candidates.sort_values(by='disc_price', ascending=True).iloc[0]
+                            
+                            optimized_basket.append({
                                 'Ingredient': ingredient,
-                                'Match': best_product['product_name'],
-                                'Price': best_product['disc_price'],
-                                'Store': best_product['store'],
-                                'Link': match[2] # Index reference
+                                'Product': best_deal['product_name'],
+                                'Price': best_deal['disc_price'],
+                                'Store': best_deal['store']
                             })
-                            found_ingredients.append(ingredient)
                         else:
                             missing_ingredients.append(ingredient)
 
-                    if basket_items:
-                        basket_df = pd.DataFrame(basket_items)
+                    # 3. DISPLAY PROCUREMENT STRATEGY
+                    if optimized_basket:
+                        opt_df = pd.DataFrame(optimized_basket)
                         
-                        # --- 3. MULTI-TIER SHOPPING STRATEGY ---
                         st.divider()
                         st.subheader("🛒 Procurement Strategy")
                         
-                        # A. ONE-STOP SHOP ANALYSIS
-                        shops = df['store'].unique()
-                        shop_costs = {}
+                        col_hustle, col_stats = st.columns(2)
+                        with col_hustle:
+                            st.markdown("#### 🏃 The 'Hustle' Route (Best Prices)")
+                            st.metric("Total Basket Price", f"{opt_df['Price'].sum():.2f}€")
+                            st.dataframe(opt_df[['Ingredient', 'Product', 'Price', 'Store']], hide_index=True)
                         
-                        for shop in shops:
-                            # Filter basket for this shop
-                            shop_specific_basket = basket_df[basket_df['Store'] == shop]
-                            # If shop has at least 50% of the ingredients, we calculate a "Basket Estimate"
-                            # (Missing items are penalized by adding the average price of that item across other stores)
-                            if len(shop_specific_basket) > 0:
-                                cost = shop_specific_basket['Price'].sum()
-                                coverage = len(shop_specific_basket) / len(found_ingredients) * 100
-                                shop_costs[shop] = {'cost': cost, 'coverage': coverage}
+                        with col_stats:
+                            st.markdown("#### 🏪 Availability by Store")
+                            store_counts = opt_df['Store'].value_counts().reset_index()
+                            store_counts.columns = ['Store', 'Items Found']
+                            st.table(store_counts)
 
-                        # B. MULTI-SHOP OPTIMAL (The "Hustle" Price)
-                        # We already picked the absolute best matches globally in the loop above? 
-                        # Actually, extractOne finds the best STRING match, not necessarily the best PRICE.
-                        # Let's refine: Find CHEAPEST valid match for each ingredient globally.
-                        
-                        optimized_basket = []
-                        total_hustle_cost = 0
-                        
-                        for ingredient in recipe_data['ingredients']:
-                            # Get all matches > 50 score
-                            matches = process.extract(ingredient, df['product_name'], scorer=fuzz.WRatio, limit=10)
-                            valid_indices = [m[2] for m in matches if m[1] > 50]
-                            
-                            if valid_indices:
-                                candidates = df.iloc[valid_indices]
-                                best_deal = candidates.sort_values(by='disc_price', ascending=True).iloc[0]
-                                optimized_basket.append({
-                                    'Ingredient': ingredient,
-                                    'Product': best_deal['product_name'],
-                                    'Price': best_deal['disc_price'],
-                                    'Store': best_deal['store']
-                                })
-                                total_hustle_cost += best_deal['disc_price']
-                        
-                        opt_df = pd.DataFrame(optimized_basket)
-                        
-                        # DISPLAY RESULTS
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.markdown("#### 🏃 The 'Hustle' Route (Multi-Shop)")
-                            st.metric("Lowest Theoretical Price", f"{total_hustle_cost:.2f}€")
-                            st.dataframe(opt_df, hide_index=True)
-                            
-                            # Store Split Count
-                            unique_stores = opt_df['Store'].unique()
-                            st.info(f"Route requires visiting: {', '.join(unique_stores)}")
+                        if missing_ingredients:
+                            st.warning(f"⚠️ Items not found in flyers: {', '.join(missing_ingredients)}")
 
-                        with col2:
-                            st.markdown("#### 🏠 One-Stop Options")
-                            if shop_costs:
-                                # Sort by coverage desc, then cost asc
-                                sorted_shops = sorted(shop_costs.items(), key=lambda x: (-x[1]['coverage'], x[1]['cost']))
-                                for sh, data in sorted_shops:
-                                    st.write(f"**{sh}**: {data['cost']:.2f}€ (Found {data['coverage']:.0f}% of items)")
-                            else:
-                                st.warning("No single shop has enough ingredients.")
+                except Exception as e:
+                    st.error(f"Logic Error: {str(e)}")
 
                         if missing_ingredients:
                             st.error(f"⚠️ Could not find prices for: {', '.join(missing_ingredients)}")
