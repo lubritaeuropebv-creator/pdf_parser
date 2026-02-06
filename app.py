@@ -257,16 +257,16 @@ if not st.session_state['master_df'].empty:
 
                 except Exception as e:
                     st.error(f"AI strategijos klaida: {str(e)}")
-with tab3:
-    st.header("🛒 Greitas produktų krepšelio parinkimas")
-    st.info("Įveskite produktus (atskirtus kableliais), ir sistema suras pigiausią krepšelį be recepto kūrimo.")
+    with tab3:
+        st.header("🛒 Greitas produktų krepšelio parinkimas")
+        st.info("Įveskite produktus (atskirtus kableliais), ir sistema suras pigiausią krepšelį be recepto kūrimo.")
     
-    prekiu_ivestis = st.text_area("Įveskite pirkinių sąrašą:", placeholder="Pvz.: Pienas, kiaušiniai, sviestas, batonas, agurkai")
-    vykdyti_paieska = st.button("Optimizuoti krepšelį")
+        prekiu_ivestis = st.text_area("Įveskite pirkinių sąrašą:", placeholder="Pvz.: Pienas, kiaušiniai, sviestas, batonas, agurkai")
+        vykdyti_paieska = st.button("Optimizuoti krepšelį")
 
-    if vykdyti_paieska and prekiu_ivestis:
-        if st.session_state['master_df'].empty:
-            st.warning("Pirmiausia įkelkite skrajutes šoninėje juostoje!")
+        if vykdyti_paieska and prekiu_ivestis:
+            if st.session_state['master_df'].empty:
+                st.warning("Pirmiausia įkelkite skrajutes šoninėje juostoje!")
         else:
             with st.spinner("Ieškoma geriausių pasiūlymų..."):
                 # Paruošiame sąrašą
