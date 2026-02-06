@@ -157,124 +157,77 @@ if not st.session_state['master_df'].empty:
             generate_btn = st.button("👨‍🍳 Invent & Shop", type="primary", use_container_width=True)
 
         if generate_btn and user_input:
-            with st.spinner("Analyzing market data and creating strategy..."):
+            with st.spinner("🧠 AI Strategist is analyzing market data..."):
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3-flash-preview")
                 
-                # 1. STANDARDIZED RECIPE GENERATION
-                recipe_prompt = f"""
-                Create a recipe for: '{user_input}'.
-                Return strictly valid JSON with:
-                - 'recipe_name': Title.
-                - 'ingredients': List of generic Lithuanian grocery terms (e.g., 'Sviestas', 'Pienas', 'Kvietiniai miltai').
-                - 'instructions': Short steps.
+                # Convert your current flyer database to a compact text format for Gemini to read
+                market_context = st.session_state['master_df'][['product_name', 'disc_price', 'std_price', 'store']].to_json(orient='records')
+
+                # 1. THE ALL-IN-ONE STRATEGY PROMPT
+                # We ask Gemini to handle the recipe, the semantic matching, and the price optimization
+                strategy_prompt = f"""
+                You are an elite grocery price strategist. 
+                Task:
+                1. Create a recipe for '{user_input}' using Lithuanian ingredients.
+                2. Match these ingredients to the provided MARKET DATA.
+                3. For each ingredient, find the semantic match (e.g., if ingredient is 'Sausainiai', only match with actual cookies, never bread).
+                4. Select the CHEAPEST match across all stores for the 'Hustle' route.
+                5. Find the best 'One-Stop' shop based on coverage and total price.
+
+                MARKET DATA:
+                {market_context}
+
+                Return strictly valid JSON:
+                {{
+                  "recipe_name": "string",
+                  "instructions": "string",
+                  "hustle_basket": [
+                    {{"ingredient": "item", "product": "name", "price": 0.0, "std_price": 0.0, "store": "Lidl", "discount": "20%"}}
+                  ],
+                  "one_stop_options": [
+                    {{"store": "string", "total_price": 0.0, "coverage_pct": 0}}
+                  ]
+                }}
                 """
+                
                 try:
-                    resp = model.generate_content(recipe_prompt)
+                    resp = model.generate_content(strategy_prompt)
                     clean_json = resp.text.strip().replace("```json", "").replace("```", "")
-                    recipe_data = json.loads(clean_json)
+                    strat_data = json.loads(clean_json)
                     
-                    st.success(f"🍽️ **Recipe:** {recipe_data['recipe_name']}")
-                    with st.expander("View Cooking Instructions"):
-                        st.write(recipe_data['instructions'])
+                    st.success(f"🍽️ **Strategy for:** {strat_data['recipe_name']}")
+                    with st.expander("👨‍🍳 View Cooking Steps"):
+                        st.write(strat_data['instructions'])
 
-                    df = st.session_state['master_df']
-                    ingredients = recipe_data['ingredients']
-                    
-                    # --- 2. HIGH-PRECISION PROCUREMENT ENGINE ---
-                    st.divider()
-                    st.subheader("🛒 Procurement Strategy Optimizer")
-                    
-                   # --- REFINED HIGH-PRECISION MATCHING ---
-                    hustle_items = []
-                    missing_ingredients = []
-                    df = st.session_state['master_df']
-                    ingredients = recipe_data['ingredients']
-
-                    for ing in ingredients:
-                        clean_ing = ing.lower().strip()
-                        
-                        # STEP 1: Strict Token Matching (Prevents "Coffee vs Paprika")
-                        matches = process.extract(clean_ing, df['product_name'], scorer=fuzz.token_set_ratio, limit=10)
-                        valid_indices = [m[2] for m in matches if m[1] >= 80] # Adjusted to 80 for better recall
-                        
-                        if valid_indices:
-                            candidates = df.iloc[valid_indices]
-                            best = candidates.sort_values(by='disc_price').iloc[0]
-                            hustle_items.append({
-                                'Ingredient': ing, 
-                                'Product': best['product_name'], 
-                                'Price': best['disc_price'], 
-                                'Store': best['store']
-                            })
-                        else:
-                            # STEP 2: Fallback - Simple Containment Check
-                            # This catches "Sausainiai" inside "Sondey Sausainiai įvairių rūšių"
-                            fallback_df = df[df['product_name'].str.contains(clean_ing, case=False, na=False)]
-                            
-                            if not fallback_df.empty:
-                                best = fallback_df.sort_values(by='disc_price').iloc[0]
-                                hustle_items.append({
-                                    'Ingredient': ing, 
-                                    'Product': best['product_name'], 
-                                    'Price': best['disc_price'], 
-                                    'Store': best['store']
-                                })
-                            else:
-                                missing_ingredients.append(ing)
-
-                    # --- 3. ONE-STOP SHOP ANALYSIS ---
-                    shop_results = []
-                    for shop in df['store'].unique():
-                        shop_df = df[df['store'] == shop]
-                        found_count = 0
-                        shop_total = 0
-                        for ing in ingredients:
-                            m = process.extractOne(ing, shop_df['product_name'], scorer=fuzz.token_set_ratio)
-                            if m and m[1] >= 85:
-                                found_count += 1
-                                shop_total += shop_df[shop_df['product_name'] == m[0]]['disc_price'].min()
-                        
-                        if found_count > 0:
-                            shop_results.append({
-                                "Store": shop, "Total": round(shop_total, 2), 
-                                "Coverage": f"{found_count}/{len(ingredients)}",
-                                "Pct": (found_count / len(ingredients))
-                            })
-
-                    # --- 4. DISPLAY TIERS & INTERACTIVE SWAP ---
+                    # --- 2. DISPLAY STRATEGIC TIERS ---
                     tab_hustle, tab_one_stop = st.tabs(["🏃 Multi-Shop (Max Savings)", "🏠 One-Stop (Convenience)"])
 
                     with tab_hustle:
-                        if hustle_items:
-                            h_df = pd.DataFrame(hustle_items)
-                            hustle_total = h_df['Price'].sum()
-                            st.metric("Global Minimum Cost", f"{hustle_total:.2f}€")
-                            
-                            for i, row in h_df.iterrows():
-                                c1, c2 = st.columns([1, 2])
-                                with c1:
-                                    st.write(f"**{row['Ingredient']}**")
-                                with c2:
-                                    alts = process.extract(row['Ingredient'], df['product_name'], scorer=fuzz.token_set_ratio, limit=3)
-                                    alt_opts = [f"{df.iloc[m[2]]['product_name']} ({df.iloc[m[2]]['disc_price']}€ @ {df.iloc[m[2]]['store']})" for m in alts if m[1] >= 75]
-                                    if alt_opts:
-                                        st.selectbox(f"Swap {row['Ingredient']}", alt_opts, key=f"h_swp_{i}", label_visibility="collapsed")
+                        h_df = pd.DataFrame(strat_data['hustle_basket'])
+                        hustle_total = h_df['price'].sum()
                         
-                        if missing_ingredients:
-                            st.warning(f"⚠️ No matches for: {', '.join(missing_ingredients)}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Global Minimum Cost", f"{hustle_total:.2f}€")
+                        with col2:
+                            # Calculate realized savings from standard prices
+                            total_savings = (h_df['std_price'].sum()) - hustle_total
+                            st.metric("Total Realized Savings", f"{max(0, total_savings):.2f}€")
+
+                        st.markdown("#### Your Optimized Procurement List")
+                        # Displaying Standard Price and Discount clearly as requested
+                        st.table(h_df[['ingredient', 'product', 'std_price', 'price', 'discount', 'store']])
 
                     with tab_one_stop:
-                        if shop_results:
-                            s_df = pd.DataFrame(shop_results).sort_values(by=["Pct", "Total"], ascending=[False, True])
-                            best_one_stop = s_df.iloc[0]['Total']
-                            variance = best_one_stop - hustle_total
-                            
-                            st.metric("One-Stop Premium", f"+{variance:.2f}€", help="Difference between single shop and multi-shop strategy")
-                            st.table(s_df[["Store", "Total", "Coverage"]])
+                        s_df = pd.DataFrame(strat_data['one_stop_options']).sort_values(by="total_price")
+                        st.table(s_df)
+                        
+                        premium = s_df.iloc[0]['total_price'] - hustle_total
+                        st.info(f"💡 The Convenience Premium is **{premium:.2f}€**. Shopping at {s_df.iloc[0]['store']} only is { (premium/hustle_total)*100:.0f}% more expensive.")
 
                 except Exception as e:
-                    st.error(f"Strategy Error: {str(e)}")
+                    st.error(f"AI Strategy Error: {str(e)}")
                                
 else:
     st.info("Upload retailer flyers to enable the Kitchen Strategist.")
