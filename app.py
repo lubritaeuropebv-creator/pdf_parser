@@ -257,7 +257,7 @@ if not st.session_state['master_df'].empty:
 
                 except Exception as e:
                     st.error(f"AI strategijos klaida: {str(e)}")
-    with tab3:
+with tab3:
     st.header("🛒 Greitas produktų krepšelio parinkimas")
     st.info("Įveskite produktus (atskirtus kableliais), ir sistema suras pigiausią krepšelį be recepto kūrimo.")
     
