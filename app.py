@@ -259,34 +259,39 @@ if not st.session_state['master_df'].empty:
                     st.error(f"AI strategijos klaida: {str(e)}")
     with tab3:
         st.header("🛒 Greitas produktų krepšelio parinkimas")
-        st.info("Įveskite produktus (atskirtus kableliais), ir sistema suras pigiausią krepšelį be recepto kūrimo.")
+        st.info("Įveskite produktus kableliais (pvz.: pienas, agurkai, sausainiai).")
         
-        prekiu_ivestis = st.text_area("Įveskite pirkinių sąrašą:", placeholder="Pvz.: Pienas, kiaušiniai, sviestas, batonas, agurkai")
-        vykdyti_paieska = st.button("Optimizuoti krepšelį")
+        prekiu_ivestis = st.text_area("Jūsų pirkinių sąrašas:", placeholder="Pvz.: Pienas, kiaušiniai, agurkai")
+        vykdyti_paieska = st.button("Surasti geriausias kainas")
     
         if vykdyti_paieska and prekiu_ivestis:
             if st.session_state['master_df'].empty:
-                st.warning("Pirmiausia įkelkite skrajutes šoninėje juostoje!")
+                st.warning("Klaida: Duomenų bazė tuščia. Įkelkite skrajutes šoninėje juostoje!")
             else:
-                with st.spinner("Ieškoma geriausių pasiūlymų..."):
-                    # Paruošiame sąrašą
-                    ieskomos_prekes = [p.strip() for p in prekiu_ivestis.split(',')]
+                with st.spinner("AI analizuoja kainas ir grupines nuolaidas..."):
+                    ieskomos_prekes = [p.strip() for p in prekiu_ivestis.split(',') if p.strip()]
                     df = st.session_state['master_df']
+                    
+                    # Paruošiame duomenų kontekstą (tik pirmas 500 eilučių, kad neviršytų atminties)
+                    rinkos_json = df[['product_name', 'package_size', 'disc_price', 'std_price', 'discount_pct', 'store']].head(1000).to_json(orient='records')
                     
                     rezultatai = []
                     nerasta = []
     
                     for preke in ieskomos_prekes:
-                        if not preke: continue
-                        
-                        # Naudojame semantinę paiešką per Gemini, kad rastų tiksliausiai (su grupinių nuolaidų palaikymu)
-                        rinkos_json = df[['product_name', 'package_size', 'disc_price', 'std_price', 'discount_pct', 'store']].to_json(orient='records')
-                        
+                        # AI užklausa kiekvienai prekei
                         paieskos_promptas = f"""
-                        Tu esi pirkimų ekspertas. Surask geriausią atitikmenį produktui: '{preke}'.
-                        Naudok šiuos duomenis: {rinkos_json}
+                        Tu esi lietuviškų pirkinių ekspertas. 
+                        Rask geriausią atitikmenį produktui: '{preke}'.
                         
-                        Grąžink tik JSON:
+                        INSTRUKCIJOS:
+                        1. Jei nėra konkretaus prekės ženklo, rinkis bet kurį tos kategorijos produktą (pvz. 'pienas' -> bet koks pienas).
+                        2. Prioritetą teik mažiausiai 'disc_price'.
+                        3. BŪTINAI įtrauk 'package_size'.
+                        
+                        DUOMENYS: {rinkos_json}
+                        
+                        Grąžink TIK JSON:
                         {{
                             "preke": "pavadinimas iš DB",
                             "dydis": "pakuotė",
@@ -295,42 +300,57 @@ if not st.session_state['master_df'].empty:
                             "nuolaida": "proc",
                             "parduotuve": "pavadinimas"
                         }}
-                        Jei nieko panašaus nėra, grąžink tuščią JSON {{}}.
                         """
                         
                         try:
                             r = model.generate_content(paieskos_promptas)
-                            res = json.loads(r.text.strip().replace("```json", "").replace("```", ""))
+                            # Išvalome atsakymą nuo galimų Markdown šiukšlių
+                            cleaned_res = r.text.strip().replace("```json", "").replace("```", "")
+                            res = json.loads(cleaned_res)
                             
-                            if res and res.get('preke'):
+                            if res and "preke" in res and res["preke"]:
                                 rezultatai.append(res)
                             else:
-                                nerasta.append(preke)
-                        except:
+                                # AUTOMATINIS SAUGIKLIS: Jei AI nerado, ieškome tiesiogiai pagal tekstą
+                                fallback = df[df['product_name'].str.contains(preke, case=False, na=False)].sort_values(by='disc_price')
+                                if not fallback.empty:
+                                    f_row = fallback.iloc[0]
+                                    rezultatai.append({
+                                        "preke": f_row['product_name'],
+                                        "dydis": f_row['package_size'],
+                                        "kaina": f_row['disc_price'],
+                                        "std_kaina": f_row['std_price'],
+                                        "nuolaida": f"{f_row['discount_pct']:.0f}%",
+                                        "parduotuve": f_row['store']
+                                    })
+                                else:
+                                    nerasta.append(preke)
+                        except Exception:
                             nerasta.append(preke)
     
+                    # --- REZULTATŲ ATVAIZDAVIMAS ---
                     if rezultatai:
                         res_df = pd.DataFrame(rezultatai)
                         viso_suma = res_df['kaina'].sum()
                         
                         c1, c2 = st.columns(2)
-                        c1.metric("Krepšelio kaina", f"{viso_suma:.2f}€")
+                        c1.metric("Krepšelio suma", f"{viso_suma:.2f}€")
                         
-                        # Suformatuota lentelė su 2 skaitmenimis po kablelio
+                        # Formatuojame kainas su 2 skaitmenimis
                         display_res = res_df.copy()
                         display_res['kaina'] = display_res['kaina'].apply(lambda x: f"{x:.2f}€")
                         display_res['std_kaina'] = display_res['std_kaina'].apply(lambda x: f"{x:.2f}€" if x > 0 else "Nėra")
                         
                         st.table(display_res[['preke', 'dydis', 'std_kaina', 'kaina', 'nuolaida', 'parduotuve']])
                         
-                        # SMS paruoštukas
-                        sms = "🛒 MANO KREPŠELIS:\n"
+                        # SMS Paruoštukas
+                        sms = f"🛒 PIGIAUSIAS KREPŠELIS:\n"
                         for _, row in res_df.iterrows():
                             sms += f"• {row['preke']} ({row['dydis']}) - {row['kaina']:.2f}€ @ {row['parduotuve']}\n"
                         sms += f"\nVISO: {viso_suma:.2f}€"
-                        st.text_area("SMS kopijavimui:", value=sms, height=150)
+                        st.text_area("SMS nukopijavimui:", value=sms, height=180)
                     
                     if nerasta:
-                        st.warning(f"Nerasta atitikmenų šioms prekėms: {', '.join(nerasta)}")
+                        st.warning(f"Nepavyko surasti pasiūlymų šioms prekėms: {', '.join(nerasta)}")
 else:
     st.info("Upload retailer flyers to enable the Kitchen Strategist.")
