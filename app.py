@@ -258,96 +258,95 @@ if not st.session_state['master_df'].empty:
                 except Exception as e:
                     st.error(f"AI strategijos klaida: {str(e)}")
     with tab3:
-        st.header("🛒 Greitas produktų krepšelis ir palyginimas")
-        st.info("Įveskite produktus kableliais. Sistema suras pigiausius variantus ir palygins tinklus.")
+        st.header("🛒 Išmanusis pirkinių krepšelis")
         
-        prekiu_ivestis = st.text_area("Pirkinių sąrašas:", placeholder="Pvz.: pienas, sausainiai, kopūstai", key="quick_basket_input")
-        vykdyti_paieska = st.button("Analizuoti krepšelio kainas", type="primary")
+        # --- KONFIGŪRACIJA ---
+        col_input, col_filter = st.columns([2, 1])
+        
+        with col_input:
+            prekiu_ivestis = st.text_area("Pirkinių sąrašas (pvz.: kiauliena, sausainiai, pienas):", 
+                                         placeholder="Įveskite prekes atskirtas kableliais", 
+                                         key="quick_basket_input_v2")
+        
+        with col_filter:
+            st.write("⚙️ Nustatymai")
+            tinklo_filtras = st.selectbox("Strategijos pasirinkimas:", 
+                                          ["Geriausia kaina rinkoje (Mix)", "Tik IKI", "Tik Lidl"])
+        
+        vykdyti_paieska = st.button("Analizuoti sutaupymą", type="primary")
     
         if vykdyti_paieska and prekiu_ivestis:
             if st.session_state['master_df'].empty:
                 st.warning("⚠️ Duomenų bazė tuščia! Įkelkite duomenis šoninėje juostoje.")
             else:
-                with st.spinner("Vykdoma tinklų analizė..."):
+                with st.spinner("AI Strategas skaičiuoja naudą..."):
                     ieskomos_prekes = [p.strip() for p in prekiu_ivestis.split(',') if p.strip()]
                     df = st.session_state['master_df']
-                    rinkos_json = df[['product_name', 'package_size', 'disc_price', 'std_price', 'discount_pct', 'store']].to_json(orient='records')
                     
-                    rezultatai = []
+                    final_basket = []
                     nerasta = []
+                    total_std = 0.0
+                    total_disc = 0.0
     
                     for preke in ieskomos_prekes:
-                        rasta_per_ai = False
-                        # 1. AI bandymas
-                        try:
-                            paieskos_promptas = f"Rask pigiausią '{preke}' iš šių duomenų: {rinkos_json}. Grąžink tik JSON: {{\"preke\": \"pav\", \"dydis\": \"pak\", \"kaina\": 0.0, \"std_kaina\": 0.0, \"nuolaida\": \"proc\", \"parduotuve\": \"pard\"}}"
-                            r = model.generate_content(paieskos_promptas)
-                            res = json.loads(r.text.strip().replace("```json", "").replace("```", ""))
-                            if res and res.get('preke'):
-                                rezultatai.append(res)
-                                rasta_per_ai = True
-                        except: pass
-    
-                        # 2. Fallback (Tiesioginė paieška), jei AI nepavyko
-                        if not rasta_per_ai:
-                            fallback = df[df['product_name'].str.contains(preke, case=False, na=False)].sort_values(by='disc_price')
-                            if not fallback.empty:
-                                f_row = fallback.iloc[0]
-                                rezultatai.append({
-                                    "preke": f_row['product_name'], "dydis": f_row['package_size'],
-                                    "kaina": f_row['disc_price'], "std_kaina": f_row['std_price'],
-                                    "nuolaida": f"{f_row['discount_pct']:.0f}%", "parduotuve": f_row['store']
-                                })
-                            else:
-                                nerasta.append(preke)
-    
-                    if rezultatai:
-                        res_df = pd.DataFrame(rezultatai)
-                        hustle_suma = res_df['kaina'].sum()
-    
-                        # --- PARDUOTUVIŲ PALYGINIMAS ---
-                        st.subheader("📊 Tinklų palyginimas (Vieno sustojimo kaina)")
-                        palyginimas = []
-                        tinklai = df['store'].unique()
+                        # Kamieno paieška: 'kiauliena' -> 'kiaul'
+                        kamienas = preke[:5].lower() if len(preke) > 4 else preke.lower()
                         
-                        for tinklas in tinklai:
-                            tinklo_suma = 0
-                            rasta_tinkle = 0
-                            for preke in ieskomos_prekes:
-                                match = df[(df['store'] == tinklas) & (df['product_name'].str.contains(preke, case=False, na=False))].sort_values(by='disc_price')
-                                if not match.empty:
-                                    tinklo_suma += match.iloc[0]['disc_price']
-                                    rasta_tinkle += 1
-                            
-                            if rasta_tinkle > 0:
-                                palyginimas.append({
-                                    "Tinklas": tinklas, 
-                                    "Krepšelio kaina": f"{tinklo_suma:.2f}€", 
-                                    "Rasta prekių": f"{rasta_tinkle}/{len(ieskomos_prekes)}",
-                                    "Suma_num": tinklo_suma
-                                })
+                        if "Tik" in tinklo_filtras:
+                            target_store = tinklo_filtras.replace("Tik ", "")
+                            filtered_df = df[df['store'] == target_store]
+                        else:
+                            filtered_df = df
                         
-                        p_df = pd.DataFrame(palyginimas).sort_values(by="Suma_num")
-                        st.table(p_df[["Tinklas", "Krepšelio kaina", "Rasta prekių"]])
+                        matches = filtered_df[filtered_df['product_name'].str.contains(kamienas, case=False, na=False)].sort_values(by='disc_price')
+                        
+                        if not matches.empty:
+                            f_row = matches.iloc[0]
+                            final_basket.append({
+                                "Prekė": f_row['product_name'],
+                                "Pakuotė": f_row['package_size'],
+                                "Standartinė": f_row['std_price'],
+                                "Akcinė": f_row['disc_price'],
+                                "Sutaupymas": f"{f_row['discount_pct']:.0f}%",
+                                "Parduotuvė": f_row['store']
+                            })
+                            # Skaičiuojame sumas metrikoms
+                            total_disc += f_row['disc_price']
+                            # Jei std_price yra 0 (nėra duomenų), naudojame disc_price kaip bazę
+                            total_std += f_row['std_price'] if f_row['std_price'] > 0 else f_row['disc_price']
+                        else:
+                            nerasta.append(preke)
     
-                        # --- PIGIAUSIAS MIX SĄRAŠAS ---
+                    if final_basket:
+                        # --- TAUPYMO SKAITIKLIS (METRIKOS) ---
+                        st.subheader("💰 Jūsų taupymo suvestinė")
+                        m1, m2, m3 = st.columns(3)
+                        
+                        sutaupyta_eur = total_std - total_disc
+                        taupymo_proc = (sutaupyta_eur / total_std * 100) if total_std > 0 else 0
+                        
+                        m1.metric("Krepšelio kaina", f"{total_disc:.2f}€")
+                        m2.metric("Sutaupyta suma", f"{sutaupyta_eur:.2f}€", delta=f"{taupymo_proc:.1f}%", delta_color="normal")
+                        m3.metric("Prekių kiekis", f"{len(final_basket)} vnt.")
+    
+                        # --- LENTELĖ ---
                         st.divider()
-                        st.subheader("🏃 Pigiausias 'Hustle' krepšelis (per kelias parduotuves)")
-                        st.metric("Minimali suma", f"{hustle_suma:.2f}€")
+                        res_df = pd.DataFrame(final_basket)
                         
-                        display_res = res_df.copy()
-                        display_res['kaina'] = display_res['kaina'].apply(lambda x: f"{x:.2f}€")
-                        display_res['std_kaina'] = display_res['std_kaina'].apply(lambda x: f"{x:.2f}€" if x > 0 else "Nėra")
-                        st.table(display_res[['preke', 'dydis', 'std_kaina', 'kaina', 'nuolaida', 'parduotuve']])
+                        display_df = res_df.copy()
+                        display_df['Akcinė'] = display_df['Akcinė'].apply(lambda x: f"{x:.2f}€")
+                        display_df['Standartinė'] = display_df['Standartinė'].apply(lambda x: f"{x:.2f}€" if x > 0 else "Nėra")
+                        
+                        st.table(display_df)
     
-                        # SMS Paruoštukas
-                        sms = f"🛒 OPTIMIZUOTAS KREPŠELIS:\n"
+                        # --- SMS RUOŠINYS ---
+                        sms = f"🛒 PIGIAUSIAS KREPŠELIS ({tinklo_filtras}):\n"
                         for _, row in res_df.iterrows():
-                            sms += f"• {row['preke']} - {row['kaina']:.2f}€ @ {row['parduotuve']}\n"
-                        sms += f"\nVISO: {hustle_suma:.2f}€"
-                        st.text_area("SMS nukopijavimui:", value=sms, height=150)
+                            sms += f"• {row['Prekė']} - {row['Akcinė']} @ {row['Parduotuvė']}\n"
+                        sms += f"\nVISO: {total_disc:.2f}€ (Sutaupyta: {sutaupyta_eur:.2f}€)"
+                        st.text_area("Nukopijuokite į SMS:", value=sms, height=180)
     
                     if nerasta:
-                        st.error(f"❌ Nerasta: {', '.join(nerasta)}")
+                        st.error(f"❌ Nepavyko rasti atitikmenų šioms prekėms: {', '.join(nerasta)}")
 else:
     st.info("Upload retailer flyers to enable the Kitchen Strategist.")
